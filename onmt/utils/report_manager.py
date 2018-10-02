@@ -8,8 +8,8 @@ import onmt
 from onmt.utils.logging import logger
 
 
-def build_report_manager(opt):
-    if opt.tensorboard:
+def build_report_manager(opt, device_id):
+    if opt.tensorboard and device_id == 0: #TODO hacky multiprocessing workaround
         from tensorboardX import SummaryWriter
         writer = SummaryWriter(opt.tensorboard_log_dir
                                + datetime.now().strftime("/%b-%d_%H-%M-%S"),

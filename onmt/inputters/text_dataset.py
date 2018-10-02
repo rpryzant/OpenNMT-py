@@ -40,9 +40,11 @@ class TextDataset(DatasetBase):
     def __init__(self, fields, src_examples_iter, tgt_examples_iter,
                  num_src_feats=0, num_tgt_feats=0,
                  src_seq_length=0, tgt_seq_length=0,
-                 dynamic_dict=True, use_filter_pred=True):
+                 dynamic_dict=True, use_filter_pred=True,
+                 n_ctx=0, n_feats=0):
         self.data_type = 'text'
-
+        self.n_ctx = n_ctx
+        self.n_feats = n_feats
         # self.src_vocabs: mutated in dynamic_dict, used in
         # collapse_copy_scores and in Translator.py
         self.src_vocabs = []
@@ -198,7 +200,7 @@ class TextDataset(DatasetBase):
                 yield line
 
     @staticmethod
-    def get_fields(n_src_features, n_tgt_features):
+    def get_fields(n_src_features, n_tgt_features, ctx_size=-1, nfeats=-1):
         """
         Args:
             n_src_features (int): the number of source features to
@@ -207,7 +209,7 @@ class TextDataset(DatasetBase):
                 create `torchtext.data.Field` for.
 
         Returns:
-            A dictionary whose keys are strings and whose values
+            A dictionary whose keys are strings and  whose values
             are the corresponding Field objects.
         """
         fields = {}
@@ -219,6 +221,16 @@ class TextDataset(DatasetBase):
         for j in range(n_src_features):
             fields["src_feat_" + str(j)] = \
                 torchtext.data.Field(pad_token=PAD_WORD)
+
+        for j in range(ctx_size):
+            fields["ctx_" + str(j)] = torchtext.data.Field(
+            pad_token=PAD_WORD,
+            include_lengths=True)
+
+        for j in range(nfeats):
+            fields['feat_' + str(j)] = \
+                torchtext.data.Field(pad_token=PAD_WORD)
+
 
         fields["tgt"] = torchtext.data.Field(
             init_token=BOS_WORD, eos_token=EOS_WORD,
@@ -258,7 +270,6 @@ class TextDataset(DatasetBase):
         fields["indices"] = torchtext.data.Field(
             use_vocab=False, dtype=torch.long,
             sequential=False)
-
         return fields
 
     @staticmethod
@@ -312,7 +323,7 @@ class ShardedTextCorpusIterator(object):
     """
 
     def __init__(self, corpus_path, line_truncate, side, shard_size,
-                 assoc_iter=None):
+                 assoc_iter=None, use_ctx=False, use_feats=False):
         """
         Args:
             corpus_path: the corpus file path.
@@ -331,6 +342,8 @@ class ShardedTextCorpusIterator(object):
             sys.stderr.write("Failed to open corpus file: %s" % corpus_path)
             sys.exit(1)
 
+        self.use_ctx = use_ctx
+        self.use_feats = use_feats
         self.line_truncate = line_truncate
         self.side = side
         self.shard_size = shard_size
@@ -409,11 +422,36 @@ class ShardedTextCorpusIterator(object):
         return self.n_feats
 
     def _example_dict_iter(self, line, index):
-        line = line.split()
-        if self.line_truncate:
-            line = line[:self.line_truncate]
-        words, feats, n_feats = TextDataset.extract_text_features(line)
-        example_dict = {self.side: words, "indices": index}
+# TODO -- TRUNCATION!!
+#        if self.line_truncate:
+#            line = line[:self.line_truncate]
+
+        if self.side == 'src':
+            if self.use_ctx:
+                parts = line.split('||')
+                if self.use_feats:
+                    parts[-1] = parts[-1].split('|')[0]
+
+                example_dict = {
+                    'ctx_%d' % i: tuple(parts[1 + i].split()) for i in range(len(parts[1:]))
+                }
+
+            if self.use_feats:
+                parts = line.split('||')[-1].split('|')[1:]
+                for i, f in enumerate(parts):
+                    example_dict['feat_%d' % i] = f.strip()
+            
+            src_line = line.split('||')[0].split()
+
+            words, feats, n_feats = TextDataset.extract_text_features(src_line)
+            example_dict[self.side] = words
+            example_dict['indices'] = index
+
+        else:
+            line = line.split()
+            words, feats, n_feats = TextDataset.extract_text_features(line)
+            example_dict = {self.side: words, "indices": index}
+
         if feats:
             # All examples must have same number of features.
             aeq(self.n_feats, n_feats)

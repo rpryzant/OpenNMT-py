@@ -16,6 +16,35 @@ import onmt.utils
 
 from onmt.utils.logging import logger
 
+from onmt.utils.logging import logger
+import os
+from onmt.translate.translator import build_translator
+import onmt.translate
+import codecs
+import numpy as np
+from collections import Counter
+import subprocess
+import re
+
+CTX_SIZE = 2
+NUM_FEATS = 2
+
+
+def get_bleu(hyp_fp, ref_fp):
+    base_dir = os.path.abspath(__file__ + "/../..")
+    # Rollback pointer to the beginning.
+
+    try:
+        res = subprocess.check_output("perl %s/tools/multi-bleu.perl %s < %s"
+                                      % (base_dir, ref_fp, hyp_fp),
+                                      shell=True).decode("utf-8")
+    except:
+        res = 'BLEU = 0.00'
+
+    res.strip()
+    bleu = re.findall('BLEU = ([\d\.]+)', res.strip())[0]
+    return float(bleu)
+
 
 def build_trainer(opt, device_id, model, fields,
                   optim, data_type, model_saver=None):
@@ -49,12 +78,13 @@ def build_trainer(opt, device_id, model, fields,
         n_gpu = 0
     gpu_verbose_level = opt.gpu_verbose_level
 
-    report_manager = onmt.utils.build_report_manager(opt)
+    report_manager = onmt.utils.build_report_manager(opt, device_id)
     trainer = onmt.Trainer(model, train_loss, valid_loss, optim, trunc_size,
                            shard_size, data_type, norm_method,
                            grad_accum_count, n_gpu, gpu_rank,
                            gpu_verbose_level, report_manager,
-                           model_saver=model_saver)
+                           model_saver=model_saver,
+                           opt=opt, fields=fields, device_id=device_id)
     return trainer
 
 
@@ -86,7 +116,8 @@ class Trainer(object):
     def __init__(self, model, train_loss, valid_loss, optim,
                  trunc_size=0, shard_size=32, data_type='text',
                  norm_method="sents", grad_accum_count=1, n_gpu=1, gpu_rank=1,
-                 gpu_verbose_level=0, report_manager=None, model_saver=None):
+                 gpu_verbose_level=0, report_manager=None, model_saver=None,
+                 opt=None, fields=None, device_id=None):
         # Basic attributes.
         self.model = model
         self.train_loss = train_loss
@@ -102,6 +133,9 @@ class Trainer(object):
         self.gpu_verbose_level = gpu_verbose_level
         self.report_manager = report_manager
         self.model_saver = model_saver
+        self.opt = opt
+        self.fields = fields
+        self.device_id = device_id
 
         assert grad_accum_count > 0
         if grad_accum_count > 1:
@@ -143,7 +177,6 @@ class Trainer(object):
         self._start_report_manager(start_time=total_stats.start_time)
 
         while step <= train_steps:
-
             reduce_counter = 0
             for i, batch in enumerate(train_iter):
                 if self.n_gpu == 0 or (i % self.n_gpu == self.gpu_rank):
@@ -188,8 +221,7 @@ class Trainer(object):
                             if self.gpu_verbose_level > 0:
                                 logger.info('GpuRank %d: validate step %d'
                                             % (self.gpu_rank, step))
-                            valid_iter = valid_iter_fct()
-                            valid_stats = self.validate(valid_iter)
+                            valid_stats = self.validate(valid_iter_fct, step)
                             if self.gpu_verbose_level > 0:
                                 logger.info('GpuRank %d: gather valid stat \
                                             step %d' % (self.gpu_rank, step))
@@ -212,7 +244,7 @@ class Trainer(object):
 
         return total_stats
 
-    def validate(self, valid_iter):
+    def validate(self, valid_iter_fct, step=0):
         """ Validate model.
             valid_iter: validate data iterator
         Returns:
@@ -220,6 +252,25 @@ class Trainer(object):
         """
         # Set model in validating mode.
         self.model.eval()
+        # get some bleu scores
+        self.model.generator.eval()
+
+        print('GETTING BLEU...')
+        valid_iter = valid_iter_fct()
+        output_fname = os.path.dirname(self.opt.save_model) + '/pred.%d.%d' % (
+            self.device_id, step)
+        translator = build_translator(self.opt, report_score=True,
+            out_file=codecs.open(output_fname, 'w+', 'utf-8'),
+            fields=self.fields,
+            model=self.model,
+            model_opt=self.opt)
+        translator.translate(src_path=self.opt.valid_src,
+                             tgt_path=self.opt.valid_tgt,
+                             batch_size=self.opt.batch_size,
+                             iterator=valid_iter)
+        bleu = get_bleu(output_fname, self.opt.valid_tgt)
+        print(bleu, file=open(
+            os.path.dirname(self.opt.save_model) + '/%d.bleu_log' % self.device_id, 'a'))
 
         stats = onmt.utils.Statistics()
 
@@ -232,15 +283,31 @@ class Trainer(object):
 
             tgt = inputters.make_features(batch, 'tgt')
 
+            # TODO -- MAKE THIS STUFF DYNAMIC!!!
+            if hasattr(batch, 'ctx_0'):
+                ctx_0 = inputters.make_features(batch, 'ctx_0', self.data_type)
+                _, ctx_0_lens = batch.ctx_0
+            else:
+                ctx_0 = None
+                ctx_0_lens = None
+            if hasattr(batch, 'ctx_1'):
+                ctx_1 = inputters.make_features(batch, 'ctx_1', self.data_type)
+                _, ctx_1_lens = batch.ctx_0              
+            else:
+                ctx_1 = None
+                ctx_1_lens = None
+
+
             # F-prop through the model.
-            outputs, attns, _ = self.model(src, tgt, src_lengths)
+            outputs, attns, _ = self.model(src, tgt, src_lengths,
+                ctx_0, ctx_0_lens, ctx_1, ctx_1_lens)
 
             # Compute loss.
             batch_stats = self.valid_loss.monolithic_compute_loss(
                 batch, outputs, attns)
 
             # Update statistics.
-            stats.update(batch_stats)
+            stats.update(batch_stats, bleu=bleu)
 
         # Set model back to training mode.
         self.model.train()
@@ -270,6 +337,20 @@ class Trainer(object):
 
             tgt_outer = inputters.make_features(batch, 'tgt')
 
+            if hasattr(batch, 'ctx_0'):
+                ctx_0 = inputters.make_features(batch, 'ctx_0', self.data_type)
+                _, ctx_0_lens = batch.ctx_0
+            else:
+                ctx_0 = None
+                ctx_0_lens = None
+            if hasattr(batch, 'ctx_1'):
+                ctx_1 = inputters.make_features(batch, 'ctx_1', self.data_type)
+                _, ctx_1_lens = batch.ctx_0              
+            else:
+                ctx_1 = None
+                ctx_1_lens = None
+
+
             for j in range(0, target_size-1, trunc_size):
                 # 1. Create truncated target.
                 tgt = tgt_outer[j: j + trunc_size]
@@ -278,7 +359,9 @@ class Trainer(object):
                 if self.grad_accum_count == 1:
                     self.model.zero_grad()
                 outputs, attns, dec_state = \
-                    self.model(src, tgt, src_lengths, dec_state)
+                    self.model(src, tgt, src_lengths, 
+                        ctx_0, ctx_0_lens, ctx_1, ctx_1_lens,
+                        dec_state)
 
                 # 3. Compute loss in shards for memory efficiency.
                 batch_stats = self.train_loss.sharded_compute_loss(

@@ -54,7 +54,8 @@ def model_opts(parser):
                        Options are [text|img|audio].""")
 
     group.add_argument('-encoder_type', type=str, default='rnn',
-                       choices=['rnn', 'brnn', 'mean', 'transformer', 'cnn'],
+                       choices=['rnn', 'brnn', 'mean', 'transformer', 'cnn',
+                       'simple_context_0', 'simple_context_1'],
                        help="""Type of encoder layer to use. Non-RNN layers
                        are experimental. Options are
                        [rnn|brnn|mean|transformer|cnn].""")
@@ -249,6 +250,10 @@ def train_opts(parser):
     group.add_argument('-data', required=True,
                        help="""Path prefix to the ".train.pt" and
                        ".valid.pt" file path from preprocess.py""")
+    group.add_argument('-valid_src', required=True,
+                       help="Path to the validation source data")
+    group.add_argument('-valid_tgt', required=True,
+                       help="Path to the validation target data")
 
     group.add_argument('-save_model', default='model',
                        help="""Model filename (the model will be saved as
@@ -436,6 +441,75 @@ def train_opts(parser):
                        model faster and smaller""")
 
 
+
+
+    ################################################# STUFF FROM TESTING!!
+    group = parser.add_argument_group('Beam')
+    group.add_argument('-fast', action="store_true",
+                       help="""Use fast beam search (some features may not be
+                       supported!)""")
+    group.add_argument('-beam_size', type=int, default=5,
+                       help='Beam size')
+    group.add_argument('-min_length', type=int, default=0,
+                       help='Minimum prediction length')
+    group.add_argument('-max_length', type=int, default=100,
+                       help='Maximum prediction length.')
+    group.add_argument('-max_sent_length', action=DeprecateAction,
+                       help="Deprecated, use `-max_length` instead")
+
+    # Alpha and Beta values for Google Length + Coverage penalty
+    # Described here: https://arxiv.org/pdf/1609.08144.pdf, Section 7
+    group.add_argument('-stepwise_penalty', action='store_true',
+                       help="""Apply penalty at every decoding step.
+                       Helpful for summary penalty.""")
+    group.add_argument('-length_penalty', default='none',
+                       choices=['none', 'wu', 'avg'],
+                       help="""Length Penalty to use.""")
+    group.add_argument('-coverage_penalty', default='none',
+                       choices=['none', 'wu', 'summary'],
+                       help="""Coverage Penalty to use.""")
+    group.add_argument('-alpha', type=float, default=0.,
+                       help="""Google NMT length penalty parameter
+                        (higher = longer generation)""")
+    group.add_argument('-beta', type=float, default=-0.,
+                       help="""Coverage penalty parameter""")
+    group.add_argument('-block_ngram_repeat', type=int, default=0,
+                       help='Block repetition of ngrams during decoding.')
+    group.add_argument('-ignore_when_blocking', nargs='+', type=str,
+                       default=[],
+                       help="""Ignore these strings when blocking repeats.
+                       You want to block sentence delimiters.""")
+    group.add_argument('-replace_unk', action="store_true",
+                       help="""Replace the generated UNK tokens with the
+                       source token that had highest attention weight. If
+                       phrase_table is provided, it will lookup the
+                       identified source token and give the corresponding
+                       target token. If it is not provided(or the identified
+                       source token does not exist in the table) then it
+                       will copy the source token""")
+    group = parser.add_argument_group('Logging')
+    group.add_argument('-verbose', action="store_true",
+                       help='Print scores and predictions for each sentence')
+    group.add_argument('-attn_debug', action="store_true",
+                       help='Print best attn for each word')
+    group.add_argument('-dump_beam', type=str, default="",
+                       help='File to dump beam information to.')
+    group.add_argument('-n_best', type=int, default=1,
+                       help="""If verbose is set, will output the n_best
+                       decoded sentences""")
+
+    group.add_argument('-report_bleu', action='store_true',
+                       help="""Report bleu score after translation,
+                       call tools/multi-bleu.perl on command line""")
+    group.add_argument('-report_rouge', action='store_true',
+                       help="""Report rouge 1/2/3/L/SU4 score after translation
+                       call tools/test_rouge.py on command line""")
+    group.add_argument('-data_type', default="text",
+                       help="Type of the source input. Options: [text|img].")
+
+
+
+
 def translate_opts(parser):
     """ Translation / inference options """
     group = parser.add_argument_group('Model')
@@ -551,6 +625,11 @@ def translate_opts(parser):
                        choices=[3, 1],
                        help="""Using grayscale image can training
                        model faster and smaller""")
+
+
+
+
+
 
 
 def add_md_help_argument(parser):

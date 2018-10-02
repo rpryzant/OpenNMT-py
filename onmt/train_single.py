@@ -20,6 +20,10 @@ from onmt.models import build_model_saver
 from onmt.utils.logging import init_logger, logger
 
 
+CTX_SIZE = 2
+NUM_FEATS = 2
+
+
 def _check_save_model_path(opt):
     save_model_path = os.path.abspath(opt.save_model)
     model_dirname = os.path.dirname(save_model_path)
@@ -94,7 +98,8 @@ def main(opt, device_id):
     data_type = first_dataset.data_type
 
     # Load fields generated from preprocess phase.
-    fields = _load_fields(first_dataset, data_type, opt, checkpoint)
+    fields = _load_fields(first_dataset, data_type, opt, checkpoint,
+        ctx_size=CTX_SIZE, nfeats=NUM_FEATS)
 
     # Report src/tgt features.
 

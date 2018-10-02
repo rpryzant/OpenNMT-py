@@ -18,36 +18,41 @@ import onmt.opts as opts
 import onmt.decoders.ensemble
 
 
-def build_translator(opt, report_score=True, logger=None, out_file=None):
+def build_translator(opt, report_score=True, out_file=None, logger=None,
+        fields=None, model=None, model_opt=None):
     if out_file is None:
         out_file = codecs.open(opt.output, 'w+', 'utf-8')
-
-    if opt.gpu > -1:
-        torch.cuda.set_device(opt.gpu)
+    # model should already be on device, is being used in part fo the training loop now
+    # print(opt)
+    # quit()
+    # if opt.gpu > -1:
+    #     torch.cuda.set_device(opt.gpu)
 
     dummy_parser = argparse.ArgumentParser(description='train.py')
     opts.model_opts(dummy_parser)
     dummy_opt = dummy_parser.parse_known_args([])[0]
 
-    if len(opt.models) > 1:
-        # use ensemble decoding if more than one model is specified
-        fields, model, model_opt = \
-            onmt.decoders.ensemble.load_test_model(opt, dummy_opt.__dict__)
-    else:
+    # if len(opt.models) > 1:
+    #     # use ensemble decoding if more than one model is specified
+    #     fields, model, model_opt = \
+    #         onmt.decoders.ensemble.load_test_model(opt, dummy_opt.__dict__)
+    # else:
+    if fields is None and model is None and model_opt is None:
         fields, model, model_opt = \
             onmt.model_builder.load_test_model(opt, dummy_opt.__dict__)
 
-    scorer = onmt.translate.GNMTGlobalScorer(opt.alpha,
-                                             opt.beta,
-                                             opt.coverage_penalty,
-                                             opt.length_penalty)
+    scorer = onmt.translate.GNMTGlobalScorer(0,#opt.alpha,
+                                             0,#opt.beta,
+                                             None,#opt.coverage_penalty,
+                                             None)#opt.length_penalty)
 
     kwargs = {k: getattr(opt, k)
               for k in ["beam_size", "n_best", "max_length", "min_length",
                         "stepwise_penalty", "block_ngram_repeat",
                         "ignore_when_blocking", "dump_beam", "report_bleu",
-                        "data_type", "replace_unk", "gpu", "verbose", "fast",
-                        "image_channel_size"]}
+                        "data_type", "replace_unk", "verbose", "fast"]} # TODO gpu
+    if opt.gpu_ranks:
+      kwargs['gpu'] = True
 
     translator = Translator(model, fields, global_scorer=scorer,
                             out_file=out_file, report_score=report_score,
@@ -107,7 +112,7 @@ class Translator(object):
                  image_channel_size=3):
         self.logger = logger
         self.gpu = gpu
-        self.cuda = gpu > -1
+        self.cuda = gpu # TODO -- get the actuall number instead of a boolearn flag
 
         self.model = model
         self.fields = fields
@@ -153,7 +158,8 @@ class Translator(object):
                   tgt_data_iter=None,
                   src_dir=None,
                   batch_size=None,
-                  attn_debug=False):
+                  attn_debug=False,
+                  iterator=None):
         """
         Translate content of `src_data_iter` (if not None) or `src_path`
         and get gold scores if one of `tgt_data_iter` or `tgt_path` is set.
@@ -195,18 +201,22 @@ class Translator(object):
                           window_size=self.window_size,
                           window_stride=self.window_stride,
                           window=self.window,
-                          use_filter_pred=self.use_filter_pred,
-                          image_channel_size=self.image_channel_size)
+                          use_filter_pred=self.use_filter_pred)
 
         if self.cuda:
             cur_device = "cuda"
         else:
             cur_device = "cpu"
 
-        data_iter = inputters.OrderedIterator(
-            dataset=data, device=cur_device,
-            batch_size=batch_size, train=False, sort=False,
-            sort_within_batch=True, shuffle=False)
+
+        if iterator is not None:
+            data_iter = iterator
+        else:
+            data_iter = inputters.OrderedIterator(
+                dataset=data, device=cur_device,
+                batch_size=batch_size, train=False, sort=False,
+                sort_within_batch=True, shuffle=False)
+
 
         builder = onmt.translate.TranslationBuilder(
             data, self.fields,
@@ -548,7 +558,22 @@ class Translator(object):
         if data_type == 'text':
             _, src_lengths = batch.src
 
-        enc_states, memory_bank = self.model.encoder(src, src_lengths)
+            if hasattr(batch, 'ctx_0'):
+                ctx_0 = inputters.make_features(batch, 'ctx_0', self.data_type)
+                _, ctx_0_lens = batch.ctx_0
+            else:
+                ctx_0 = None
+                ctx_0_lens = None
+            if hasattr(batch, 'ctx_1'):
+                ctx_1 = inputters.make_features(batch, 'ctx_1', self.data_type)
+                _, ctx_1_lens = batch.ctx_0              
+            else:
+                ctx_1 = None
+                ctx_1_lens = None
+
+        enc_states, memory_bank = self.model.encoder(src, src_lengths,
+                                                     ctx_0, ctx_0_lens,
+                                                     ctx_1, ctx_1_lens)
         dec_states = self.model.decoder.init_decoder_state(
             src, memory_bank, enc_states)
 

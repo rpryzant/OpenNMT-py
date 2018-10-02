@@ -15,6 +15,7 @@ from onmt.encoders.cnn_encoder import CNNEncoder
 from onmt.encoders.mean_encoder import MeanEncoder
 from onmt.encoders.audio_encoder import AudioEncoder
 from onmt.encoders.image_encoder import ImageEncoder
+from onmt.encoders.simple_context_transformer import SimpleContextTransformerEncoder
 
 from onmt.decoders.decoder import InputFeedRNNDecoder, StdRNNDecoder
 from onmt.decoders.transformer import TransformerDecoder
@@ -60,14 +61,29 @@ def build_embeddings(opt, word_dict, feature_dicts, for_encoder=True):
                       sparse=opt.optim == "sparseadam")
 
 
-def build_encoder(opt, embeddings):
+def build_encoder(opt, embeddings, fields=None):
     """
     Various encoder dispatcher function.
     Args:
         opt: the option in current environment.
         embeddings (Embeddings): vocab embeddings for this encoder.
     """
-    if opt.encoder_type == "transformer":
+    if opt.encoder_type == 'simple_context_0':
+        # bottom n-1 layers are shared
+        return SimpleContextTransformerEncoder(
+                                  opt.enc_layers - 1, opt.rnn_size,
+                                  opt.heads, opt.transformer_ff,
+                                  opt.dropout, embeddings,
+                                  selected_ctx=0)
+    elif opt.encoder_type == 'simple_context_1':
+        # bottom n-1 layers are shared
+        return SimpleContextTransformerEncoder(
+                                  opt.enc_layers - 1, opt.rnn_size,
+                                  opt.heads, opt.transformer_ff,
+                                  opt.dropout, embeddings,
+                                  selected_ctx=1)
+
+    elif opt.encoder_type == "transformer":
         return TransformerEncoder(opt.enc_layers, opt.rnn_size,
                                   opt.heads, opt.transformer_ff,
                                   opt.dropout, embeddings)
@@ -91,7 +107,7 @@ def build_decoder(opt, embeddings):
         opt: the option in current environment.
         embeddings (Embeddings): vocab embeddings for this decoder.
     """
-    if opt.decoder_type == "transformer":
+    if opt.decoder_type == "transformer" or opt.model_type == 'simple_context':
         return TransformerDecoder(opt.dec_layers, opt.rnn_size,
                                   opt.heads, opt.transformer_ff,
                                   opt.global_attention, opt.copy_attn,
@@ -132,12 +148,14 @@ def load_test_model(opt, dummy_opt, model_path=None):
     checkpoint = torch.load(model_path,
                             map_location=lambda storage, loc: storage)
     fields = inputters.load_fields_from_vocab(
-        checkpoint['vocab'], data_type=opt.data_type)
+        checkpoint['vocab'], data_type=opt.data_type,
+        ctx_size=2, nfeats=2)
 
     model_opt = checkpoint['opt']
     for arg in dummy_opt:
         if arg not in model_opt:
             model_opt.__dict__[arg] = dummy_opt[arg]
+
     model = build_base_model(model_opt, fields, use_gpu(opt), checkpoint)
     model.eval()
     model.generator.eval()
@@ -155,7 +173,7 @@ def build_base_model(model_opt, fields, gpu, checkpoint=None):
     Returns:
         the NMTModel.
     """
-    assert model_opt.model_type in ["text", "img", "audio"], \
+    assert model_opt.model_type in ['simple_context', "text", "img", "audio"], \
         ("Unsupported model type %s" % (model_opt.model_type))
 
     # Build encoder.
@@ -163,18 +181,12 @@ def build_base_model(model_opt, fields, gpu, checkpoint=None):
         src_dict = fields["src"].vocab
         feature_dicts = inputters.collect_feature_vocabs(fields, 'src')
         src_embeddings = build_embeddings(model_opt, src_dict, feature_dicts)
-        encoder = build_encoder(model_opt, src_embeddings)
+        encoder = build_encoder(model_opt, src_embeddings, fields)
     elif model_opt.model_type == "img":
-        if ("image_channel_size" not in model_opt.__dict__):
-            image_channel_size = 3
-        else:
-            image_channel_size = model_opt.image_channel_size
-
         encoder = ImageEncoder(model_opt.enc_layers,
                                model_opt.brnn,
                                model_opt.rnn_size,
-                               model_opt.dropout,
-                               image_channel_size)
+                               model_opt.dropout)
     elif model_opt.model_type == "audio":
         encoder = AudioEncoder(model_opt.enc_layers,
                                model_opt.brnn,

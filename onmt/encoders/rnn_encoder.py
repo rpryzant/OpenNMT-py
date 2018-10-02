@@ -50,7 +50,8 @@ class RNNEncoder(EncoderBase):
                                     hidden_size,
                                     num_layers)
 
-    def forward(self, src, lengths=None):
+    def forward(self, src, lengths=None,
+            ctx_0=None, ctx_0_lengths=None, ctx_1=None, ctx_1_lengths=None):
         "See :obj:`EncoderBase.forward()`"
         self._check_args(src, lengths)
 

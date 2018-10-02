@@ -25,7 +25,6 @@ class TransformerEncoderLayer(nn.Module):
 
     def __init__(self, d_model, heads, d_ff, dropout):
         super(TransformerEncoderLayer, self).__init__()
-
         self.self_attn = onmt.modules.MultiHeadedAttention(
             heads, d_model, dropout=dropout)
         self.feed_forward = PositionwiseFeedForward(d_model, d_ff, dropout)
@@ -95,10 +94,10 @@ class TransformerEncoder(EncoderBase):
              for _ in range(num_layers)])
         self.layer_norm = onmt.modules.LayerNorm(d_model)
 
-    def forward(self, src, lengths=None):
+    def forward(self, src, lengths=None, 
+            ctx_0=None, ctx_0_lengths=None, ctx_1=None, ctx_1_lengths=None):
         """ See :obj:`EncoderBase.forward()`"""
         self._check_args(src, lengths)
-
         emb = self.embeddings(src)
 
         out = emb.transpose(0, 1).contiguous()
@@ -111,5 +110,4 @@ class TransformerEncoder(EncoderBase):
         for i in range(self.num_layers):
             out = self.transformer[i](out, mask)
         out = self.layer_norm(out)
-
         return emb, out.transpose(0, 1).contiguous()

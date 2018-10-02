@@ -38,14 +38,15 @@ class DatasetBase(torchtext.data.Dataset):
         "This is a hack. Something is broken with torch pickle."
         return super(DatasetBase, self).__reduce_ex__()
 
-    def load_fields(self, vocab_dict):
+    def load_fields(self, vocab_dict, ctx_size, nfeats):
         """ Load fields from vocab.pt, and set the `fields` attribute.
 
         Args:
             vocab_dict (dict): a dict of loaded vocab from vocab.pt file.
         """
         fields = onmt.inputters.inputter.load_fields_from_vocab(
-            vocab_dict.items(), self.data_type)
+            vocab_dict.items(), self.data_type, 
+            ctx_size=ctx_size, nfeats=nfeats)
         self.fields = dict([(k, f) for (k, f) in fields.items()
                             if k in self.examples[0].__dict__])
 
